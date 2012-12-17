@@ -1,15 +1,19 @@
 ////////////////////////////////////////////
 #include <SoftwareSerial.h>
-#include <TinyGPS.h>
+#include <TinyNMEA.h>
 #include <EtherCard.h>
 #include <LiquidCrystal.h>
+//#include "EEPROMHist.h"
+
+
 
 /////////////////////////////////////////
 // ethernet interface mac address, must be unique on the LAN
 static byte mymac[] = { 0x74,0x69,0x69,0x2D,0x30,0x32 };
-static byte myip[] = { 10,0,0,15 }; 
-//static byte myip[] = { 192,168,0,15 };
-byte Ethernet::buffer[550];
+//static byte myip[] = { 10,0,0,15 }; 
+static byte myip[] = { 192,168,0,15 };
+//byte Ethernet::buffer[550];
+byte Ethernet::buffer[400];
 BufferFiller bfill;
 
 
@@ -36,14 +40,15 @@ BufferFiller bfill;
 #define PMTK_SET_BAUD_115200 "$PMTK251,115200*1F"
 
 
-TinyGPS gps;
-SoftwareSerial ss(8, 9);
+TinyNMEA gps;
+TinyNMEA anemometer;
+SoftwareSerial ss(8,9);
 
 
 ////////////////////////////////////////////////
 LiquidCrystal lcd(A2,A3, 7,6,5,4);
 
-#define MAX_COUNT  25
+#define MAX_COUNT  7  //25
 #define LED_PIN A4
 #define PPS_PIN  3
 #define LOGWHEEL_PIN  2
@@ -72,27 +77,31 @@ volatile int        g_logCount;
 void interruptHandlerGPS_PPS() 
 {
   if( g_PPSOn )
+  {
       digitalWrite(LED_PIN, LOW);
-  else
-      digitalWrite(LED_PIN, HIGH);
-  g_PPSOn = !g_PPSOn;
-  g_timePPS = millis();
-  
-  
-  //update the log count calibration
-  g_lastLogCount = g_logCount;
-  g_logCount = 0;
-  
-  if( g_lastLogCount/2 < MAX_COUNT )
-  {
-   g_numCounts[g_lastLogCount/2] ++;
-   g_sumSpeed[g_lastLogCount/2] += g_fspeed;   
   }
   else
   {
-   g_numCounts[MAX_COUNT-1] ++;
-   g_sumSpeed[MAX_COUNT-1] += g_fspeed;   
+    g_timePPS = millis();
+    digitalWrite(LED_PIN, HIGH);
+    
+    //update the log count calibration
+    g_lastLogCount = g_logCount;
+    g_logCount = 0;
+    
+    if( g_lastLogCount/2 < MAX_COUNT )
+    {
+     g_numCounts[g_lastLogCount/2] ++;
+     g_sumSpeed[g_lastLogCount/2] += g_fspeed;   
+    }
+    else
+    {
+     g_numCounts[MAX_COUNT-1] ++;
+     g_sumSpeed[MAX_COUNT-1] += g_fspeed;   
+    } 
   }
+  
+  g_PPSOn = !g_PPSOn; 
 }
 
 void interruptHandlerLogCounter() 
@@ -197,21 +206,25 @@ static word servePage(word pos)
       "<meta http-equiv='refresh' content='1'/>"
       "<title>Enchantee Log</title>"));
 
-     printDMS(g_flat, printBuf); 
+    printDMS(g_flat, printBuf); 
     bfill.emit_p(PSTR("<h1>Lat $S<h1>"), printBuf );
     printDMS(g_flon, printBuf);
     bfill.emit_p(PSTR("<h1>Lon $S<h1>"), printBuf );
     bfill.emit_p(PSTR("<h1>Speed $D.$D</h1>"), (int)g_fspeed, (int)((g_fspeed-(int)g_fspeed)*10) );
     bfill.emit_p(PSTR("<h1>Course $D.$D</h1>"), (int)g_fcourse, (int)((g_fcourse - (int)g_fcourse)*10) );
-    bfill.emit_p(PSTR("<h1>Satellites $D</h1>"), gps.satellites() == TinyGPS::GPS_INVALID_SATELLITES ? 0 : gps.satellites() );
-    int hDop = gps.hdop() == TinyGPS::GPS_INVALID_HDOP ? 0 : gps.hdop();  
-    bfill.emit_p(PSTR("<h1>Horz DOP $D.$D</h1>"), (int)hDop/100, (int)((hDop/100.0 - (int)(hDop/100))*100));
-    bfill.emit_p(PSTR("<h1>Water log counter $D</h1>"), g_lastLogCount );
+    //bfill.emit_p(PSTR("<h1>Satellites $D</h1>"), gps.satellites() == TinyNMEA::GPS_INVALID_SATELLITES ? 0 : gps.satellites() );
+    //int hDop = gps.hdop() == TinyNMEA::GPS_INVALID_HDOP ? 0 : gps.hdop();  
+    //bfill.emit_p(PSTR("<h1>Horz DOP $D.$D</h1>"), (int)hDop/100, (int)((hDop/100.0 - (int)(hDop/100))*100));
+    bfill.emit_p(PSTR("<h1>Log $D</h1>"), g_lastLogCount );
+    bfill.emit_p(PSTR("<h1>Wind Speed $D</h1>"), anemometer.windSpeed());
+    bfill.emit_p(PSTR("<h1>Wind Dir $D</h1>"), anemometer.windDirection());
+    bfill.emit_p(PSTR("<h1>Temp $D</h1>"), anemometer.temperature());
+    bfill.emit_p(PSTR("Running $S\n"), printMSTime(millis(), printBuf));
+    bfill.emit_p(PSTR("Free mem $D\n"), get_free_memory() );
+    bfill.emit_p(PSTR("Since PPS $S\n"), printMSTime(millis()-g_timePPS, printBuf));
   }
-  bfill.emit_p(PSTR("Running $S\n"), printMSTime(millis(), printBuf));
-  bfill.emit_p(PSTR("Free mem $D\n"), get_free_memory() );
-  bfill.emit_p(PSTR("Since PPS $S\n"), printMSTime(millis()-g_timePPS, printBuf));
- 
+  bfill.emit_p(PSTR("Buf $D\n"), bfill.position());
+  
   return bfill.position();
 }
 
@@ -219,17 +232,17 @@ static word servePage(word pos)
 
 void setup()
 {
-  Serial.begin(115200);
+  Serial.begin(4800);
   
-  Serial.print("Simple TinyGPS library v. "); 
-  Serial.println(TinyGPS::library_version());
+  Serial.print("Simple NMEA library v. "); 
+  Serial.println(TinyNMEA::library_version());
   Serial.println("by Mikal Hart");
   Serial.println();    
 
-  lcd.begin(16,2);
+  lcd.begin(16,4);
   lcd.setCursor(0,0);
-  lcd.print("Tiny GPS v");
-  lcd.print(TinyGPS::library_version());
+  lcd.print("Enchantee GPS v");
+  lcd.print(TinyNMEA::library_version());
   lcd.setCursor(0,1);
   
   g_toggleDisplay = true;
@@ -256,7 +269,8 @@ void setup()
   digitalWrite(LOGWHEEL_PIN, HIGH);   
   attachInterrupt(0, interruptHandlerLogCounter, RISING);  
     
-
+  pinMode(A0, INPUT);
+  pinMode(A1, OUTPUT);
   //initialise the GPS module
   ss.begin( 9600 );
   ss.println( PMTK_SET_BAUD_9600 );
@@ -271,7 +285,7 @@ void setup()
 
   ss.begin(9600);
 
-  //have to set SoftwareSerial.h _SS_MAX_RX_BUFF 64 to 128 to receive more than one NEMEA string
+  //have to set SoftwareSerial.h _SS_MAX_RX_BUFF 64 to 128 to receive more than one NMEA string
   //ss.println(PMTK_SET_NMEA_OUTPUT_GGARMCGSA);
   //ss.println(PMTK_SET_NMEA_OUTPUT_RMCGSA);
   ss.println(PMTK_SET_NMEA_OUTPUT_RMCGGA);
@@ -285,118 +299,126 @@ void setup()
   if (ether.begin(sizeof Ethernet::buffer, mymac, 10) == 0)
     Serial.println( "Failed to access Ethernet controller");
   ether.staticSetup(myip);
+
+  Serial.println("initilaised");
   //1000ms delay required for Netcom 3G9WB modem
   delay(1000);
 }
 
 void loop()
 {
-  bool newData = false;
-  unsigned long chars;
-  unsigned short sentences, failed;
-
-  boolean hasPPS = (millis()-g_timePPS < 1000);
-  
-  while (ss.available())
-  {
-    char c = ss.read();
-    Serial.write(c); // uncomment this line if you want to see the GPS data flowing
-    if (gps.encode(c)) // Did a new valid sentence come in?
-    {
-      newData = true;
-      Serial.write("==>Received");
-    }
-  }
-
-  if (newData)
-  {
+    bool newData = false;
     unsigned long age;
-
-    gps.f_get_position(&g_flat, &g_flon, &age);
-    g_fspeed = gps.f_speed_kmph();
-    g_fcourse = gps.f_course();
-    
-    Serial.print("Has PPS=");
-    Serial.print(hasPPS);
-    Serial.print(" LAT=");
-    Serial.print(g_flat == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : g_flat, 6);
-    Serial.print(" LON=");
-    Serial.print(g_flon == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : g_flon, 6);
-    Serial.print(" SAT=");
-    Serial.print(gps.satellites() == TinyGPS::GPS_INVALID_SATELLITES ? 0 : gps.satellites());
-    Serial.print(" PREC=");
-    Serial.print(gps.hdop() == TinyGPS::GPS_INVALID_HDOP ? 0 : gps.hdop());
-    Serial.print(" SPEED=");
-    Serial.print(g_fspeed == TinyGPS::GPS_INVALID_SPEED ? 0 : g_fspeed/100.0,1);
-    Serial.print(" HEADING=");
-    Serial.println(g_fcourse == TinyGPS::GPS_INVALID_ANGLE ? 0 : g_fcourse/100.0,1);
-
-
-    lcd.setCursor(0,0); 
-//    if( g_toggleDisplay )
-//    {
-//      lcd.setCursor(0,0); 
-//      lcd.print( printDMS( g_flat, printBuf ));
-//      lcd.print("      ");
-//      lcd.setCursor(0,1); 
-//      lcd.print( printDMS( g_flon, printBuf ));
-//      //lcd.print(flon == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : flon, 12);
-//      lcd.print("      ");      
-//    }
-//    else
+    bool hasPPS = (millis()-g_timePPS < 1000);
+  
+    //
+    while (ss.available())
     {
-      lcd.setCursor(0,0); 
-      lcd.print("Sd=");
-      lcd.print(g_fspeed == TinyGPS::GPS_INVALID_SPEED ? 0 : fabs(g_fspeed),1);
-      lcd.print(" Cs=");
-      lcd.print(g_fcourse == TinyGPS::GPS_INVALID_ANGLE ? 0 : g_fcourse,1);
-      lcd.print("      ");
+        char c = ss.read();
+        Serial.write(c); // uncomment this line if you want to see the GPS data flowing
+        if (gps.encode(c)) // Did a new valid sentence come in?
+        {
+            newData = true;
+
+            gps.f_get_position(&g_flat, &g_flon, &age);
+            g_fspeed = gps.f_speed_kmph();
+            g_fcourse = gps.f_course();
+
+            Serial.println("==>Received GPS");
+            Serial.print("Has PPS=");
+            Serial.print(hasPPS);
+            Serial.print(" LAT=");
+            Serial.print(g_flat == TinyNMEA::GPS_INVALID_F_ANGLE ? 0.0 : g_flat, 6);
+            Serial.print(" LON=");
+            Serial.print(g_flon == TinyNMEA::GPS_INVALID_F_ANGLE ? 0.0 : g_flon, 6);
+            Serial.print(" SAT=");
+            Serial.print(gps.satellites() == TinyNMEA::GPS_INVALID_SATELLITES ? 0 : gps.satellites());
+            Serial.print(" PREC=");
+            Serial.print(gps.hdop() == TinyNMEA::GPS_INVALID_HDOP ? 0 : gps.hdop());
+            Serial.print(" SPEED=");
+            Serial.print(g_fspeed == TinyNMEA::GPS_INVALID_SPEED ? 0 : g_fspeed/100.0,1);
+            Serial.print(" HEADING=");
+            Serial.println(g_fcourse == TinyNMEA::GPS_INVALID_ANGLE ? 0 : g_fcourse/100.0,1);
+        }
+    }
+
+    //read the anemometer NMEA stream
+    while (Serial.available() )
+    {
+        char c = Serial.read();
+        //Serial.write(c);
+        if( anemometer.encode(c))
+        {
+            newData = true;
+            Serial.print("WIND SPEED=");
+            Serial.print(anemometer.windSpeed());
+            Serial.print(" WIND DIRECTION=");
+            Serial.print(anemometer.windDirection());
+            Serial.print(" TEMPERATURE=");
+            Serial.println(anemometer.temperature());
+        }
+    }
+
+    if (newData)
+    {
+        lcd.setCursor(0,0); 
+        lcd.print("Sd=");
+        lcd.print(g_fspeed == TinyNMEA::GPS_INVALID_SPEED ? 0 : fabs(g_fspeed),1);
+        lcd.print(" Cs=");
+        lcd.print(g_fcourse == TinyNMEA::GPS_INVALID_ANGLE ? 0 : g_fcourse,1);
+        lcd.print("      ");
  
-      lcd.setCursor(0,1); 
-      lcd.print("Log=");
-      lcd.print( g_lastLogCount );
-      lcd.print("/");
-      lcd.print( g_logCount );
-      if( hasPPS )
-      {
-        lcd.print(" Sat=");
-        lcd.print(gps.satellites() == TinyGPS::GPS_INVALID_SATELLITES ? 0 : gps.satellites());
-        lcd.print("   ");
-      }
-      else
+        lcd.setCursor(0,1); 
+        lcd.print("Log=");
+        lcd.print( g_lastLogCount );
+        if( hasPPS )
+        {
+            lcd.print(" Sat=");
+            lcd.print(gps.satellites() == TinyNMEA::GPS_INVALID_SATELLITES ? 0 : gps.satellites());
+            lcd.print("   ");
+        }
+        else
         lcd.print(" Sat=0  ");
+        lcd.setCursor(0,2);
+        lcd.print("Wind=");
+        lcd.print(anemometer.windSpeed());
+        lcd.print(" Dir=");
+        lcd.print(anemometer.windDirection());
+        lcd.print("    ");
+        lcd.setCursor(0,3);
+        lcd.print("Temp=");
+        lcd.print(anemometer.temperature());
+        lcd.print("    ");
     }
-  }
 
-  if( millis() - g_ms > 1000 )
-  {    
-    g_toggleDisplay = !g_toggleDisplay;
-    g_ms = millis();
+    if( millis() - g_ms > 1000 )
+    {    
+        g_toggleDisplay = !g_toggleDisplay;
+        g_ms = millis();
 
-    Serial.print("Has PPS=");
-    Serial.print(hasPPS);
+        Serial.print("Has PPS=");
+        Serial.print(hasPPS);
 
-    if( !hasPPS )
+        if( !hasPPS )
+        {
+            //we are not getting PPS. Update the last second log count
+            g_lastLogCount = g_logCount;
+            g_logCount = 0;
+            lcd.setCursor(0,1); 
+            lcd.print("Log=");
+            lcd.print( g_lastLogCount );
+            lcd.print(" Sat=0  ");
+        }
+
+        Serial.print("Log count=");
+        Serial.println( g_lastLogCount );
+    }
+
+    //service web server requests  
+    word len = ether.packetReceive();
+    word pos = ether.packetLoop(len);
+    if (pos)  // check if valid tcp data is received
     {
-      //we are not getting PPS. Update the last second log count
-      g_lastLogCount = g_logCount;
-      g_logCount = 0;
-      lcd.setCursor(0,1); 
-      lcd.print("Log=");
-      lcd.print( g_lastLogCount );
-      lcd.print(" Sat=0  ");
+        ether.httpServerReply(servePage(pos)); // send web page data
     }
-
-    Serial.print("Log count=");
-    Serial.println( g_lastLogCount );
-  }
-
-  //service web server requests  
-  word len = ether.packetReceive();
-  word pos = ether.packetLoop(len);
- 
-  if (pos)  // check if valid tcp data is received
-  {
-    ether.httpServerReply(servePage(pos)); // send web page data
-  }
 }
