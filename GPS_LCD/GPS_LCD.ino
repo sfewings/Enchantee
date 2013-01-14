@@ -1,20 +1,19 @@
 ////////////////////////////////////////////
 #include <SoftwareSerial.h>
 #include <TinyNMEA.h>
-#include <EtherCard.h>
+//#include <EtherCard.h>
 #include <LiquidCrystal.h>
 //#include "EEPROMHist.h"
 
-
+#define NMEA_ONLY   //only serial out NMEA strings
 
 /////////////////////////////////////////
 // ethernet interface mac address, must be unique on the LAN
 static byte mymac[] = { 0x74,0x69,0x69,0x2D,0x30,0x32 };
-//static byte myip[] = { 10,0,0,15 }; 
-static byte myip[] = { 192,168,0,15 };
-//byte Ethernet::buffer[550];
-byte Ethernet::buffer[400];
-BufferFiller bfill;
+static byte myip[] = { 10,0,0,15 }; 
+//static byte myip[] = { 192,168,0,15 };
+//byte Ethernet::buffer[400];
+//BufferFiller bfill;
 
 
 /////////////////////////////////////////
@@ -48,7 +47,7 @@ SoftwareSerial ss(8,9);
 ////////////////////////////////////////////////
 LiquidCrystal lcd(A2,A3, 7,6,5,4);
 
-#define MAX_COUNT  7  //25
+#define MAX_COUNT  4  //25
 #define LED_PIN A4
 #define PPS_PIN  3
 #define LOGWHEEL_PIN  2
@@ -165,6 +164,7 @@ static char* printMSTime(long ms, char* buf)
   
 ////////////////////////////////////////////////
 //Web support
+/*
 static word servePage(word pos) 
 {
   bfill = ether.tcpOffset();
@@ -217,17 +217,17 @@ static word servePage(word pos)
     //bfill.emit_p(PSTR("<h1>Horz DOP $D.$D</h1>"), (int)hDop/100, (int)((hDop/100.0 - (int)(hDop/100))*100));
     bfill.emit_p(PSTR("<h1>Log $D</h1>"), g_lastLogCount );
     bfill.emit_p(PSTR("<h1>Wind Speed $D</h1>"), anemometer.windSpeed());
-    bfill.emit_p(PSTR("<h1>Wind Dir $D</h1>"), anemometer.windDirection());
+    bfill.emit_p(PSTR("<h1>Wind Dir $D</h1>"), (anemometer.windDirection()+130)%360);
     bfill.emit_p(PSTR("<h1>Temp $D</h1>"), anemometer.temperature());
-    bfill.emit_p(PSTR("Running $S\n"), printMSTime(millis(), printBuf));
-    bfill.emit_p(PSTR("Free mem $D\n"), get_free_memory() );
-    bfill.emit_p(PSTR("Since PPS $S\n"), printMSTime(millis()-g_timePPS, printBuf));
+    bfill.emit_p(PSTR("Up $S\n"), printMSTime(millis(), printBuf));
+    bfill.emit_p(PSTR("Mem $D\n"), get_free_memory() );
+    bfill.emit_p(PSTR("Last PPS $S\n"), printMSTime(millis()-g_timePPS, printBuf));
   }
   bfill.emit_p(PSTR("Buf $D\n"), bfill.position());
   
   return bfill.position();
 }
-
+*/
 ////////////////////////////////////////////////
 
 void setup()
@@ -296,9 +296,9 @@ void setup()
   
     
   //for Nanode    if (ether.begin(sizeof Ethernet::buffer, mymac, 8) == 0)
-  if (ether.begin(sizeof Ethernet::buffer, mymac, 10) == 0)
-    Serial.println( "Failed to access Ethernet controller");
-  ether.staticSetup(myip);
+  //if (ether.begin(sizeof Ethernet::buffer, mymac, 10) == 0)
+  //  Serial.println( "Failed to access Ethernet controller");
+  //ether.staticSetup(myip);
 
   Serial.println("initilaised");
   //1000ms delay required for Netcom 3G9WB modem
@@ -321,9 +321,9 @@ void loop()
             newData = true;
 
             gps.f_get_position(&g_flat, &g_flon, &age);
-            g_fspeed = gps.f_speed_kmph();
+            g_fspeed = gps.f_speed_knots();
             g_fcourse = gps.f_course();
-
+#ifndef NMEA_ONLY
             Serial.println("==>Received GPS");
             Serial.print("Has PPS=");
             Serial.print(hasPPS);
@@ -339,6 +339,7 @@ void loop()
             Serial.print(g_fspeed == TinyNMEA::GPS_INVALID_SPEED ? 0 : g_fspeed/100.0,1);
             Serial.print(" HEADING=");
             Serial.println(g_fcourse == TinyNMEA::GPS_INVALID_ANGLE ? 0 : g_fcourse/100.0,1);
+#endif
         }
     }
 
@@ -349,13 +350,15 @@ void loop()
         //Serial.write(c);
         if( anemometer.encode(c))
         {
+#ifndef NMEA_ONLY
             newData = true;
             Serial.print("WIND SPEED=");
             Serial.print(anemometer.windSpeed());
             Serial.print(" WIND DIRECTION=");
-            Serial.print(anemometer.windDirection());
+            Serial.print((anemometer.windDirection()+130)%360);
             Serial.print(" TEMPERATURE=");
             Serial.println(anemometer.temperature());
+#endif
         }
     }
 
@@ -378,12 +381,12 @@ void loop()
             lcd.print("   ");
         }
         else
-        lcd.print(" Sat=0  ");
+            lcd.print(" Sat=0  ");
         lcd.setCursor(0,2);
         lcd.print("Wind=");
         lcd.print(anemometer.windSpeed());
         lcd.print(" Dir=");
-        lcd.print(anemometer.windDirection());
+        lcd.print((anemometer.windDirection()+130)%360);
         lcd.print("    ");
         lcd.setCursor(0,3);
         lcd.print("Temp=");
@@ -396,8 +399,8 @@ void loop()
         g_toggleDisplay = !g_toggleDisplay;
         g_ms = millis();
 
-        Serial.print("Has PPS=");
-        Serial.print(hasPPS);
+        //Serial.print("Has PPS=");
+        //Serial.print(hasPPS);
 
         if( !hasPPS )
         {
@@ -410,15 +413,25 @@ void loop()
             lcd.print(" Sat=0  ");
         }
 
-        Serial.print("Log count=");
-        Serial.println( g_lastLogCount );
+        //Create a GPVHW - Water Speed and Heading NMEA stream to carry the log wheel setting
+        char buf[100];
+        sprintf( buf, "GPVHW,%d.%d,T,0.0,M,%d.0,N,0.0,K", (int)g_fcourse, (int)((g_fcourse-(int)g_fcourse)*10), (int)((g_fcourse-(int)g_fcourse)*100) ); //g_lastLogCount );
+        //add the checksum
+        byte _parity =0;
+        for(int i=0; buf[i]!= 0; i++)
+            _parity ^= buf[i];
+        if( _parity <16 )
+            sprintf( buf, "$GPVHW,%d.%d,T,0.0,M,%d.0,N,0.0,K*0%X\r\n", (int)g_fcourse, (int)((g_fcourse-(int)g_fcourse)*10), g_lastLogCount, _parity );
+        else
+            sprintf( buf, "$GPVHW,%d.%d,T,0.0,M,%d.0,N,0.0,K*%X\r\n", (int)g_fcourse, (int)((g_fcourse-(int)g_fcourse)*10), g_lastLogCount, _parity );
+
+        Serial.print(buf);
     }
 
     //service web server requests  
-    word len = ether.packetReceive();
-    word pos = ether.packetLoop(len);
-    if (pos)  // check if valid tcp data is received
-    {
-        ether.httpServerReply(servePage(pos)); // send web page data
-    }
+    //word pos = ether.packetLoop(ether.packetReceive());
+    //if (pos)  // check if valid tcp data is received
+    //{
+    //    ether.httpServerReply(servePage(pos)); // send web page data
+    //}
 }
