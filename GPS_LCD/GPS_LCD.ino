@@ -15,6 +15,11 @@ static byte myip[] = { 10,0,0,15 };
 //byte Ethernet::buffer[400];
 //BufferFiller bfill;
 
+#define SERIAL_BUF_LEN 200
+int gpsBufPos;
+int anemometerBufPos;
+char gpsBuf[SERIAL_BUF_LEN];
+char anemometerBuf[SERIAL_BUF_LEN];
 
 /////////////////////////////////////////
 // different commands to set the update rate from once a second (1 Hz) to 10 times a second (10Hz)
@@ -232,6 +237,9 @@ static word servePage(word pos)
 
 void setup()
 {
+  gpsBufPos = 0;
+  anemometerBufPos = 0;
+
   Serial.begin(4800);
   
   Serial.print("Simple NMEA library v. "); 
@@ -247,7 +255,7 @@ void setup()
   
   g_toggleDisplay = true;
   g_ms = millis();
-  
+
   //initialise GPS PPS interrups
   pinMode(LED_PIN, OUTPUT);     
   digitalWrite(LED_PIN, LOW );
@@ -315,10 +323,18 @@ void loop()
     while (ss.available())
     {
         char c = ss.read();
-        Serial.write(c); // uncomment this line if you want to see the GPS data flowing
+        if( c == '$' || gpsBufPos-2 >= SERIAL_BUF_LEN )
+          gpsBufPos = 0;
+        gpsBuf[gpsBufPos++] = c;
+
+        //Serial.write(c); // uncomment this line if you want to see the GPS data flowing
         if (gps.encode(c)) // Did a new valid sentence come in?
         {
             newData = true;
+
+            gpsBuf[gpsBufPos++] = '\n';
+            gpsBuf[gpsBufPos++] = '\0';
+            Serial.print(gpsBuf);
 
             gps.f_get_position(&g_flat, &g_flon, &age);
             g_fspeed = gps.f_speed_knots();
@@ -347,9 +363,19 @@ void loop()
     while (Serial.available() )
     {
         char c = Serial.read();
-        //Serial.write(c);
+
+        if( c == '$' || anemometerBufPos-2 >= SERIAL_BUF_LEN )
+          anemometerBufPos = 0;
+        anemometerBuf[anemometerBufPos++] = c;
+
+        //Serial.write(c);    //write the stream stright back out
         if( anemometer.encode(c))
         {
+
+            anemometerBuf[anemometerBufPos++] = '\n';
+            anemometerBuf[anemometerBufPos++] = '\0';
+            Serial.print(anemometerBuf);
+
 #ifndef NMEA_ONLY
             newData = true;
             Serial.print("WIND SPEED=");
